@@ -6,3 +6,4 @@ The display is not perfect yet and is still being optimized
 
 ![Display Effect](img/1.jpg)
 
+I ran the display on esp32-s3
