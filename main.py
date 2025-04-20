@@ -73,20 +73,6 @@ def draw_line(x1, y1, x2, y2, color=0x03):
             plot(int(interx) + 1, y, interx % 1)
             interx = interx + gradient
 
-def draw_rect(x, y, width, height, color=0x03, fill=False):
-    """画矩形"""
-    if fill:
-        for i in range(x, x + width):
-            for j in range(y, y + height):
-                lcd.write_point(i, j, color)
-    else:
-        # 画四条边
-        for i in range(x, x + width):
-            lcd.write_point(i, y, color)
-            lcd.write_point(i, y + height - 1, color)
-        for j in range(y, y + height):
-            lcd.write_point(x, j, color)
-            lcd.write_point(x + width - 1, j, color)
 
 def draw_circle(x0, y0, radius, color=0x03, fill=False):
     """使用中点圆算法绘制抗锯齿圆"""
@@ -149,9 +135,12 @@ def test_rectangles():
     lcd.clear()
 
     # 画不同大小的矩形
-    draw_rect(50, 50, 100, 100, 0x03)  # 空心矩形
-    draw_rect(200, 200, 50, 50, 0x03, True)  # 实心矩形
-    draw_rect(100, 150, 100, 50, 0x03)  # 长方形
+    lcd.draw_rect(50, 50, 100, 100, 0x03)  # 空心矩形
+    lcd.draw_rect(200, 200, 50, 50, 0x03,1)  # 实心矩形
+    lcd.draw_rect(100, 150, 100, 50, 0x03)  # 长方形
+    lcd.draw_rect(0, 0, 50, 50, 0x03)  # 实心矩形
+    lcd.draw_rect(250, 0, 50, 50, 0x03)  # 实心矩形
+    lcd.draw_rect(250, 350, 50, 50, 0x03)  # 实心矩形
 
     lcd.display()
     time.sleep(2)

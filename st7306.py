@@ -137,7 +137,7 @@ class ST7306:
 
         # Memory Data Access Control
         self.write_command(0x36)
-        self.write_data(0x48)  # MX=1 ; DO=1
+        self.write_data(0x48)  # 恢复原始设置 MX=1 ; DO=1
 
         # Data Format Select
         self.write_command(0x3A)
@@ -220,6 +220,9 @@ class ST7306:
         """
         if x >= self.LCD_WIDTH or y >= self.LCD_HEIGHT or x < 0 or y < 0:
             return
+
+        # 反转X轴方向
+        x = self.LCD_WIDTH - 1 - x
 
         # 计算实际数据位置
         real_x = x // 2
@@ -346,6 +349,9 @@ class ST7306:
         if char not in FONT_8x8:
             return
 
+        # 确保Y坐标为偶数
+        y = (y // 2) * 2
+
         # 检查字符是否完全在屏幕范围内
         if x < 0 or x + 8 > self.LCD_WIDTH or y < 0 or y + 8 > self.LCD_HEIGHT:
             return
@@ -355,31 +361,43 @@ class ST7306:
             row_data = font_data[row]
             for col in range(8):
                 if row_data & (1 << (7 - col)):
-                    # 对于单色显示，我们只需要设置像素为显示状态
-                    self.write_point(x + col, y + row, 1)
+                    self.write_point(x + col, y + row, color)
+
+    def reverse_text(self, text):
+        """反转字符串的辅助函数"""
+        chars = list(text)
+        length = len(chars)
+        for i in range(length // 2):
+            chars[i], chars[length - 1 - i] = chars[length - 1 - i], chars[i]
+        return ''.join(chars)
 
     def draw_string(self, x, y, text, color=1):
         """在指定位置绘制字符串
         color: 0=不显示, 1=显示
         """
-        current_x = x
+        # 确保Y坐标为偶数
+        y = (y // 2) * 2
+
+        # 计算整个字符串的宽度
+        text_width = len(text) * 8
+
+        # 反转字符串
+        text = self.reverse_text(text)
+
+        # 从左侧开始显示
+        current_x = self.LCD_WIDTH - text_width - x
+        if current_x < 0:
+            current_x = 0
+
         current_y = y
-        char_spacing = 7  # 字符间距
+        char_spacing = 8  # 字符间距
 
         for char in text:
-            # 检查是否需要换行
-            if current_x + 8 > self.LCD_WIDTH:
-                current_y += 9
-                current_x = x
-                if current_y + 8 > self.LCD_HEIGHT:
-                    break
-
             if char == '\n':
-                current_y += 9
-                current_x = x
+                current_y += 8  # 确保换行后也是偶数
+                current_x = self.LCD_WIDTH - text_width - x
                 continue
 
-            # 绘制字符
             self.draw_char(current_x, current_y, char, color)
             current_x += char_spacing
 
@@ -406,18 +424,31 @@ class ST7306:
                                 self.write_point(px, py, color)
 
     def draw_string_scale(self, x, y, text, scale=1, color=1):
-        """绘制放大字符串"""
-        current_x = x
+        """绘制放大字符串
+        color: 0=不显示, 1=显示
+        """
+        # 确保Y坐标为偶数
+        y = (y // 2) * 2
+
+        # 计算缩放后的总宽度
+        text_width = len(text) * 8 * scale
+
+        # 反转字符串
+        text = self.reverse_text(text)
+
+        # 从左侧开始显示
+        current_x = self.LCD_WIDTH - text_width - x
+        if current_x < 0:
+            current_x = 0
+
         for char in text:
-            # 检查是否超出屏幕范围
-            if current_x + 8 * scale > self.LCD_WIDTH:
-                break
             if char == '\n':
-                y += 9 * scale  # 换行，保持适当的行间距
-                current_x = x
+                y += 8 * scale  # 确保换行后也是偶数
+                current_x = self.LCD_WIDTH - text_width - x
                 continue
+
             self.draw_char_scale(current_x, y, char, scale, color)
-            current_x += 8 * scale  # 根据缩放比例调整字符间距
+            current_x += 8 * scale
 
     def draw_char_rotate(self, x, y, char, angle=0, color=1):
         """绘制旋转字符"""
@@ -494,69 +525,46 @@ class ST7306:
             y += dx * sin_a
 
     def draw_circle(self, x0, y0, radius, color=1, fill=False):
-        """使用Wu's anti-aliasing circle algorithm绘制圆"""
-        def plot(x, y, brightness):
-            """绘制带亮度的像素点"""
-            # 将亮度映射到0-3的范围
-            intensity = min(3, max(0, int(brightness * color)))
+        """绘制圆
+        确保起始点y0为偶数以避免锯齿
+        """
+        y0 = (y0 // 2) * 2
+
+        def plot(x, y, c):
             if 0 <= x < self.LCD_WIDTH and 0 <= y < self.LCD_HEIGHT:
-                self.write_point(x, y, intensity)
+                self.write_point(x, y, c)
 
-        def draw_circle_points(xc, yc, x, y, alpha):
-            """绘制圆的八个对称点及其抗锯齿边缘"""
-            plot(xc + x, yc + y, alpha)
-            plot(xc - x, yc + y, alpha)
-            plot(xc + x, yc - y, alpha)
-            plot(xc - x, yc - y, alpha)
-            plot(xc + y, yc + x, alpha)
-            plot(xc - y, yc + x, alpha)
-            plot(xc + y, yc - x, alpha)
-            plot(xc - y, yc - x, alpha)
-
-        def fill_between_points(x1, x2, y):
-            """填充两点之间的区域"""
-            for x in range(x1, x2 + 1):
-                if 0 <= x < self.LCD_WIDTH and 0 <= y < self.LCD_HEIGHT:
-                    self.write_point(x, y, color)
+        def draw_circle_points(xc, yc, x, y):
+            plot(xc + x, yc + y, color)
+            plot(xc - x, yc + y, color)
+            plot(xc + x, yc - y, color)
+            plot(xc - x, yc - y, color)
+            plot(xc + y, yc + x, color)
+            plot(xc - y, yc + x, color)
+            plot(xc + y, yc - x, color)
+            plot(xc - y, yc - x, color)
 
         x = 0
         y = radius
-        alpha = 1.0
+        d = 3 - 2 * radius
 
-        # 使用改进的Xiaolin Wu's算法
         while x <= y:
             if fill:
-                # 填充内部
-                fill_between_points(x0 - x, x0 + x, y0 + y)
-                fill_between_points(x0 - x, x0 + x, y0 - y)
-                fill_between_points(x0 - y, x0 + y, y0 + x)
-                fill_between_points(x0 - y, x0 + y, y0 - x)
+                for i in range(-x, x + 1):
+                    plot(x0 + i, y0 + y, color)
+                    plot(x0 + i, y0 - y, color)
+                for i in range(-y, y + 1):
+                    plot(x0 + i, y0 + x, color)
+                    plot(x0 + i, y0 - x, color)
             else:
-                # 绘制主要轮廓点
-                draw_circle_points(x0, y0, x, y, alpha)
+                draw_circle_points(x0, y0, x, y)
 
-                # 计算下一个像素的位置
-                dy = y - 0.5
-                dx = x + 1
-                d = (dx * dx + dy * dy) ** 0.5 - radius
-
-                # 计算抗锯齿强度
-                if d >= 0:
-                    alpha = 1 - d
-                    y -= 1
-
-                # 绘制抗锯齿边缘点
-                if 0 <= alpha < 1:
-                    draw_circle_points(x0, y0, x+1, y, 1-alpha)
-                    draw_circle_points(x0, y0, x, y-1, alpha)
-
-            x += 1
-            if x > y:
-                break
-
-            # 更新误差项
-            if d >= 0:
-                y -= 1
+            if d < 0:
+                d = d + 4 * x + 6
+            else:
+                d = d + 4 * (x - y) + 10
+                y = y - 1
+            x = x + 1
 
     def draw_filled_circle(self, x0, y0, radius, color=1):
         """使用改进的扫描线算法绘制实心圆"""
@@ -583,4 +591,51 @@ class ST7306:
                         alpha = radius - dist
                         intensity = min(3, max(0, int(alpha * color)))
                         self.write_point(px, py, intensity)
+
+
+
+
+
+    def draw_rect(self, x, y, width, height, color=1, fill=False):
+        """绘制矩形
+        x, y: 左上角坐标
+        width, height: 宽度和高度
+        color: 颜色值
+        """
+        if fill:
+            for i in range(x, x + width):
+                for j in range(y, y + height):
+                    self.write_point(i, j, color)
+        else:
+            # 确保Y坐标为偶数
+            y = (y // 2) * 2
+            height = (height // 2) * 2
+
+            # 绘制上边线
+            for i in range(width):
+                self.write_point(x + i, y, color)
+                # 增强显示效果
+                if i > 0 and i < width - 1:
+                    self.write_point(x + i, y + 1, color)
+
+            # 绘制下边线
+            for i in range(width):
+                self.write_point(x + i, y + height - 1, color)
+                # 增强显示效果
+                if i > 0 and i < width - 1:
+                    self.write_point(x + i, y + height - 2, color)
+
+            # 绘制左边线
+            for i in range(height):
+                self.write_point(x, y + i, color)
+                # 增强显示效果
+                if i > 0 and i < height - 1:
+                    self.write_point(x + 1, y + i, color)
+
+            # 绘制右边线
+            for i in range(height):
+                self.write_point(x + width - 1, y + i, color)
+                # 增强显示效果
+                if i > 0 and i < height - 1:
+                    self.write_point(x + width - 2, y + i, color)
 
