@@ -24,7 +24,7 @@ lcd.clear()
 lcd.draw_line(0, 0, 299, 399, 1)  # 对角线
 lcd.draw_rect(50, 50, 200, 300, 1)  # 矩形
 lcd.draw_circle(150, 200, 50, 1)  # 圆形
-lcd.draw_string(0, 0, "Hello World!", 1)  # 文字
+lcd.draw_string_scale(0, 0, "Hello World!", 2,1)  # 文字
 
 lcd.display()
 print("测试完成！")

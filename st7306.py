@@ -198,11 +198,15 @@ class ST7306:
         P0(7,6) P1(5,4) P2(3,2) P3(1,0)
 
         屏幕上的实际排列（2x2矩阵）：
-        P0 P2
-        P1 P3
+        P0 P1
+        P2 P3
         """
         if x >= self.LCD_WIDTH or y >= self.LCD_HEIGHT or x < 0 or y < 0:
             return
+
+        # 确保写入完整的2x2像素块
+        x = (x // 2) * 2
+        y = (y // 2) * 2
 
         # 计算字节位置
         byte_x = x // 2
@@ -212,31 +216,28 @@ class ST7306:
         if byte_index >= self.DISPLAY_BUFFER_LENGTH:
             return
 
-        # 计算像素在字节内的位置
-        pixel_x = x % 2
-        pixel_y = y % 2
-        pixel_pos = pixel_y * 2 + pixel_x  # 0-3
-
-        # 计算位移
-        bit_shift = 6 - (pixel_pos * 2)  # 从高位到低位：6,4,2,0
-
-        # 更新字节
-        mask = ~(0x03 << bit_shift)  # 清除原有位
-        new_value = (data & 0x03) << bit_shift  # 设置新值
-        self.display_buffer[byte_index] = (self.display_buffer[byte_index] & mask) | new_value
+        # 写入完整的2x2像素块
+        value = data & 0x03
+        self.display_buffer[byte_index] = (value << 6) | (value << 4) | (value << 2) | value
 
     def display(self):
         """显示缓冲区内容"""
-        self.address()
+        # 设置显示区域
+        self.write_command(0x2A)  # Column Address Setting
+        self.write_data(0x05)
+        self.write_data(0x36)
+
+        self.write_command(0x2B)  # Row Address Setting
+        self.write_data(0x00)
+        self.write_data(0xC7)
+
+        # 准备写入数据
+        self.write_command(0x2C)  # Write image data
+
+        # 一次性发送所有数据
         self.dc(1)  # 数据模式
         self.cs(0)  # 片选有效
-
-        # 分块发送数据以减少单次传输量
-        chunk_size = 1024  # 每次发送1KB
-        for i in range(0, self.DISPLAY_BUFFER_LENGTH, chunk_size):
-            chunk = self.display_buffer[i:i + chunk_size]
-            self.spi.write(chunk)
-
+        self.spi.write(self.display_buffer)
         self.cs(1)  # 片选无效
 
     def clear(self):
@@ -482,53 +483,125 @@ class ST7306:
                 err += 1 - 2*x
 
     def draw_char_scale(self, x, y, char, scale=1, color=1):
-        """绘制放大字符"""
+        """绘制放大字符
+        x: 起始x坐标
+        y: 起始y坐标
+        char: 要显示的字符
+        scale: 放大倍数
+        color: 显示颜色，0=不显示，1=显示
+        """
         if char not in FONT_8x8:
             return
 
-        # 检查缩放后的字符是否在屏幕范围内
-        if x < 0 or x + 8 * scale > self.LCD_WIDTH or y < 0 or y + 8 * scale > self.LCD_HEIGHT:
+        # 确保坐标和缩放比例都为偶数
+        x = (x // 2) * 2
+        y = (y // 2) * 2
+        scale = (scale // 2) * 2
+        if scale < 2:
+            scale = 2
+
+        # 计算字符尺寸
+        char_width = 8 * scale
+        char_height = 8 * scale
+
+        # 严格的边界检查
+        if (x < 0 or x + char_width > self.LCD_WIDTH or
+            y < 0 or y + char_height > self.LCD_HEIGHT):
             return
 
         font_data = FONT_8x8[char]
+        value = 0x03 if color else 0x00
+
+        # 计算实际的显示区域（确保在LCD范围内）
+        end_x = min(x + char_width, self.LCD_WIDTH)
+        end_y = min(y + char_height, self.LCD_HEIGHT)
+
+        # 按2x2像素块清除字符区域
+        for clear_y in range(y, end_y, 2):
+            for clear_x in range(x, end_x, 2):
+                self.write_point(clear_x, clear_y, 0)
+
+        # 绘制字符（确保2x2像素块对齐）
         for row in range(8):
             row_data = font_data[row]
             for col in range(8):
-                if row_data & (1 << (7 - col)):
-                    # 绘制缩放后的像素块
-                    for sy in range(scale):
-                        for sx in range(scale):
-                            px = x + col * scale + sx
-                            py = y + row * scale + sy
-                            if 0 <= px < self.LCD_WIDTH and 0 <= py < self.LCD_HEIGHT:
-                                self.write_point(px, py, color)
+                if row_data & (1 << col):
+                    # 计算缩放后的位置
+                    for sy in range(0, scale, 2):
+                        base_y = y + row * scale + sy
+                        if base_y >= end_y:
+                            break
+
+                        for sx in range(0, scale, 2):
+                            base_x = x + col * scale + sx
+                            if base_x >= end_x:
+                                break
+
+                            self.write_point(base_x, base_y, value)
 
     def draw_string_scale(self, x, y, text, scale=1, color=1):
         """绘制放大字符串
-        color: 0=不显示, 1=显示
+        x: 起始x坐标
+        y: 起始y坐标
+        text: 要显示的文本
+        scale: 放大倍数
+        color: 显示颜色，0=不显示，1=显示
         """
-        # 确保Y坐标为偶数
+        if not text:
+            return
+
+        # 确保坐标和缩放比例都为偶数
+        x = (x // 2) * 2
         y = (y // 2) * 2
+        scale = (scale // 2) * 2
+        if scale < 2:
+            scale = 2
 
-        # 计算缩放后的总宽度
-        text_width = len(text) * 8 * scale
+        # 计算字符尺寸和间距（确保为偶数）
+        char_width = 8 * scale
+        char_height = 8 * scale
+        char_spacing = 2  # 固定使用2像素间距，确保2x2对齐
 
-        # 反转字符串
-        text = self.reverse_text(text)
+        # 计算文本总宽度（用于右对齐）
+        text_width = len(text) * (char_width + char_spacing) - char_spacing
 
-        # 从左侧开始显示
-        current_x = self.LCD_WIDTH - text_width - x
-        if current_x < 0:
-            current_x = 0
+        current_x = x
+        current_y = y
 
+        # 如果x是负值，从右边开始计算
+        if x < 0:
+            current_x = max(0, self.LCD_WIDTH - text_width)
+
+        # 预先检查垂直方向是否有足够空间
+        if current_y + char_height > self.LCD_HEIGHT:
+            return
+
+        # 绘制所有字符
         for char in text:
             if char == '\n':
-                y += 8 * scale  # 确保换行后也是偶数
-                current_x = self.LCD_WIDTH - text_width - x
+                current_y += char_height + char_spacing
+                current_x = x if x >= 0 else max(0, self.LCD_WIDTH - text_width)
+
+                # 检查换行后是否还有足够空间
+                if current_y + char_height > self.LCD_HEIGHT:
+                    break
                 continue
 
-            self.draw_char_scale(current_x, y, char, scale, color)
-            current_x += 8 * scale
+            # 检查水平方向是否需要换行
+            if current_x + char_width > self.LCD_WIDTH:
+                current_y += char_height + char_spacing
+                current_x = x if x >= 0 else max(0, self.LCD_WIDTH - text_width)
+
+                # 检查换行后是否还有足够空间
+                if current_y + char_height > self.LCD_HEIGHT:
+                    break
+
+            # 绘制当前字符
+            self.draw_char_scale(current_x, current_y, char, scale, color)
+            current_x += char_width + char_spacing
+
+        # 最后一次性更新显示
+        self.display()
 
     def draw_char_rotate(self, x, y, char, angle=0, color=1):
         """绘制旋转字符"""
