@@ -141,32 +141,45 @@ class ST7306(framebuf.FrameBuffer):
             for col in range(x, x + w, 2):
                 self.pixel(col, row, color)
 
-    def rect(self, x, y, w, h, color=1, fill=False):
-        """绘制矩形，确保2x2像素对齐"""
-        if fill:
-            self.fill_rect(x, y, w, h, color)
-        else:
+    def rect(self, x, y, width, height, color=1, fill=False, single_pixel=True):
+        """绘制矩形，支持单像素模式
+        single_pixel: True为单像素模式，False为2x2像素模式
+        """
+        if width <= 0 or height <= 0:
+            return
+
+        value = 0x03 if color else 0x00
+
+        if not single_pixel:
             x = (x // 2) * 2
             y = (y // 2) * 2
-            w = ((w + 1) // 2) * 2
-            h = ((h + 1) // 2) * 2
+            width = ((width + 1) // 2) * 2
+            height = ((height + 1) // 2) * 2
 
-            # 绘制水平线
-            for i in range(x, x + w, 2):
-                self.pixel(i, y, color)
-                self.pixel(i, y + h - 2, color)
+        if fill:
+            for cy in range(y, y + height):
+                for cx in range(x, x + width):
+                    self.pixel(cx, cy, value)
+        else:
+            # 绘制水平边
+            for cx in range(x, x + width):
+                self.pixel(cx, y, value)  # 上边
+                self.pixel(cx, y + height - 1, value)  # 下边
 
-            # 绘制垂直线
-            for i in range(y, y + h, 2):
-                self.pixel(x, i, color)
-                self.pixel(x + w - 2, i, color)
+            # 绘制垂直边
+            for cy in range(y, y + height):
+                self.pixel(x, cy, value)  # 左边
+                self.pixel(x + width - 1, cy, value)  # 右边
 
     def line(self, x1, y1, x2, y2, color=1):
-        """绘制直线，确保2x2像素对齐"""
-        x1 = (x1 // 2) * 2
-        y1 = (y1 // 2) * 2
-        x2 = (x2 // 2) * 2
-        y2 = (y2 // 2) * 2
+        """使用Bresenham算法绘制单像素直线"""
+        value = 0x03 if color else 0x00
+
+        # 确保坐标在有效范围内
+        x1 = max(0, min(x1, self.LCD_WIDTH - 1))
+        y1 = max(0, min(y1, self.LCD_HEIGHT - 1))
+        x2 = max(0, min(x2, self.LCD_WIDTH - 1))
+        y2 = max(0, min(y2, self.LCD_HEIGHT - 1))
 
         dx = abs(x2 - x1)
         dy = abs(y2 - y1)
@@ -181,47 +194,24 @@ class ST7306(framebuf.FrameBuffer):
             x1, x2 = x2, x1
             y1, y2 = y2, y1
 
-        gradient = dy / dx if dx != 0 else 0
+        dx = x2 - x1
+        dy = abs(y2 - y1)
+        error = dx // 2
+        y = y1
+        y_step = 1 if y1 < y2 else -1
 
-        # 处理第一个端点
-        xend = round(x1)
-        yend = y1 + gradient * (xend - x1)
-        xgap = 1 - ((x1 + 0.5) % 2)
-        xpxl1 = xend
-        ypxl1 = int(yend)
+        for x in range(x1, x2 + 1):
+            if steep:
+                if 0 <= y < self.LCD_WIDTH and 0 <= x < self.LCD_HEIGHT:
+                    self.pixel(y, x, value)
+            else:
+                if 0 <= x < self.LCD_WIDTH and 0 <= y < self.LCD_HEIGHT:
+                    self.pixel(x, y, value)
 
-        if steep:
-            self.pixel(ypxl1, xpxl1, color)
-        else:
-            self.pixel(xpxl1, ypxl1, color)
-
-        intery = yend + gradient
-
-        # 处理第二个端点
-        xend = round(x2)
-        yend = y2 + gradient * (xend - x2)
-        xgap = (x2 + 0.5) % 2
-        xpxl2 = xend
-        ypxl2 = int(yend)
-
-        if steep:
-            self.pixel(ypxl2, xpxl2, color)
-        else:
-            self.pixel(xpxl2, ypxl2, color)
-
-        # 主绘制循环
-        if steep:
-            for x in range(xpxl1 + 2, xpxl2, 2):
-                y = int(intery)
-                self.pixel(y, x, color)
-                self.pixel(y + 1, x, color)
-                intery = intery + gradient * 2
-        else:
-            for x in range(xpxl1 + 2, xpxl2, 2):
-                y = int(intery)
-                self.pixel(x, y, color)
-                self.pixel(x, y + 1, color)
-                intery = intery + gradient * 2
+            error -= dy
+            if error < 0:
+                y += y_step
+                error += dx
 
     def draw_text(self, x, y, text, scale=2, color=1):
         """draw_string的别名，保持向后兼容"""
@@ -448,107 +438,46 @@ class ST7306(framebuf.FrameBuffer):
         self.show()
         time.sleep_ms(10)
 
-    def draw_line(self, x1, y1, x2, y2, color=1):
-        """使用改进的Bresenham算法绘制直线"""
+    def draw_rect(self, x, y, width, height, color=1):
+        """绘制单像素矩形"""
         value = 0x03 if color else 0x00
 
-        # 确保坐标与2x2像素块对齐
-        x1 = (x1 // 2) * 2
-        y1 = (y1 // 2) * 2
-        x2 = (x2 // 2) * 2
-        y2 = (y2 // 2) * 2
+        # 确保坐标在有效范围内
+        x = max(0, min(x, self.LCD_WIDTH - 1))
+        y = max(0, min(y, self.LCD_HEIGHT - 1))
+        width = min(width, self.LCD_WIDTH - x)
+        height = min(height, self.LCD_HEIGHT - y)
 
-        dx = abs(x2 - x1)
-        dy = abs(y2 - y1)
-        steep = dy > dx
+        # 绘制水平边
+        for i in range(x, x + width):
+            self.pixel(i, y, value)  # 上边
+            if y + height - 1 < self.LCD_HEIGHT:
+                self.pixel(i, y + height - 1, value)  # 下边
 
-        if steep:
-            x1, y1 = y1, x1
-            x2, y2 = y2, x2
+        # 绘制垂直边
+        for i in range(y, y + height):
+            self.pixel(x, i, value)  # 左边
+            if x + width - 1 < self.LCD_WIDTH:
+                self.pixel(x + width - 1, i, value)  # 右边
 
-        if x1 > x2:
-            x1, x2 = x2, x1
-            y1, y2 = y2, y1
+        # 更新显示
+        self.show()
 
-        dx = x2 - x1
-        dy = abs(y2 - y1)
-        error = dx // 2
-        y = y1
-        y_step = 2 if y1 < y2 else -2
-
-        # 按2x2像素块绘制
-        for x in range(x1, x2 + 1, 2):
-            if steep:
-                self.pixel(y, x, value)
-                self.pixel(y + 1, x, value)
-                self.pixel(y, x + 1, value)
-                self.pixel(y + 1, x + 1, value)
-            else:
-                self.pixel(x, y, value)
-                self.pixel(x + 1, y, value)
-                self.pixel(x, y + 1, value)
-                self.pixel(x + 1, y + 1, value)
-
-            error -= dy
-            if error < 0:
-                y += y_step
-                error += dx
-
-    def draw_rect(self, x, y, width, height, color=1, fill=False):
-        """绘制矩形
-        使用连续的像素点绘制，确保边缘完整
+    def draw_circle(self, x0, y0, radius, color=1, fill=False, single_pixel=True):
+        """绘制圆形，支持单像素模式
+        single_pixel: True为单像素模式，False为2x2像素模式
         """
-        if width <= 0 or height <= 0:
-            return
-
-        value = 0x03 if color else 0x00
-
-        # 确保坐标和尺寸与2x2像素块对齐
-        x = (x // 2) * 2
-        y = (y // 2) * 2
-        width = ((width + 1) // 2) * 2
-        height = ((height + 1) // 2) * 2
-
-        if fill:
-            # 填充矩形（按2x2像素块）
-            for cy in range(y, y + height, 2):
-                for cx in range(x, x + width, 2):
-                    self.pixel(cx, cy, value)
-                    self.pixel(cx + 1, cy, value)
-                    self.pixel(cx, cy + 1, value)
-                    self.pixel(cx + 1, cy + 1, value)
-        else:
-            # 绘制水平边
-            for cx in range(x, x + width):
-                # 上边
-                self.pixel(cx, y, value)
-                self.pixel(cx, y + 1, value)
-                # 下边
-                self.pixel(cx, y + height - 2, value)
-                self.pixel(cx, y + height - 1, value)
-
-            # 绘制垂直边
-            for cy in range(y, y + height):
-                # 左边
-                self.pixel(x, cy, value)
-                self.pixel(x + 1, cy, value)
-                # 右边
-                self.pixel(x + width - 2, cy, value)
-                self.pixel(x + width - 1, cy, value)
-
-    def draw_circle(self, x0, y0, radius, color=1, fill=False):
-        """使用改进的Bresenham算法绘制圆"""
-        # 确保坐标与2x2像素块对齐
-        x0 = (x0 // 2) * 2
-        y0 = (y0 // 2) * 2
-        radius = (radius // 2) * 2
+        if not single_pixel:
+            x0 = (x0 // 2) * 2
+            y0 = (y0 // 2) * 2
+            radius = (radius // 2) * 2
 
         value = 0x03 if color else 0x00
         x = radius
         y = 0
         err = 0
 
-        def draw_circle_points(cx, cy):
+        def plot_points(cx, cy):
             points = [
                 (x0 + cx, y0 + cy), (x0 - cx, y0 + cy),
                 (x0 + cx, y0 - cy), (x0 - cx, y0 - cy),
@@ -557,32 +486,30 @@ class ST7306(framebuf.FrameBuffer):
             ]
             for px, py in points:
                 if 0 <= px < self.LCD_WIDTH and 0 <= py < self.LCD_HEIGHT:
-                    # 绘制2x2像素块
                     self.pixel(px, py, value)
-                    self.pixel(px + 1, py, value)
-                    self.pixel(px, py + 1, value)
-                    self.pixel(px + 1, py + 1, value)
+                    if not single_pixel:
+                        self.pixel(px + 1, py, value)
+                        self.pixel(px, py + 1, value)
+                        self.pixel(px + 1, py + 1, value)
 
         while x >= y:
             if fill:
-                # 填充对应的扇形区域（按2x2像素块）
-                for i in range(-x, x + 1, 2):
-                    for j in range(-1, 2, 2):
-                        py = y0 + y * j
-                        if 0 <= py < self.LCD_HEIGHT:
-                            px = x0 + i
-                            if 0 <= px < self.LCD_WIDTH:
-                                self.pixel(px, py, value)
-                                self.pixel(px + 1, py, value)
-                                self.pixel(px, py + 1, value)
-                                self.pixel(px + 1, py + 1, value)
+                for i in range(-x, x + 1):
+                    if y0 + y < self.LCD_HEIGHT and y0 - y >= 0:
+                        if 0 <= x0 + i < self.LCD_WIDTH:
+                            self.pixel(x0 + i, y0 + y, value)
+                            self.pixel(x0 + i, y0 - y, value)
+                    if y0 + x < self.LCD_HEIGHT and y0 - x >= 0:
+                        if 0 <= x0 + i < self.LCD_WIDTH:
+                            self.pixel(x0 + i, y0 + x, value)
+                            self.pixel(x0 + i, y0 - x, value)
             else:
-                draw_circle_points(x, y)
+                plot_points(x, y)
 
-            y += 2
+            y += 1
             err += 1 + 2*y
             if 2*(err-x) + 1 > 0:
-                x -= 2
+                x -= 1
                 err += 1 - 2*x
 
     def draw_char_scale(self, x, y, char, scale=1, color=1):
