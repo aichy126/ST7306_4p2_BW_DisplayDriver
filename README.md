@@ -1,4 +1,4 @@
-[screen information](https://www.youtube.com/watch?v=QzQYRK2JXyA)
+[screen information](https://yuyinglcd.com/ch/products/1/17/262)
 
 Adapted to MicroPython screen driver through C language driver
 
