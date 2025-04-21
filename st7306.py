@@ -13,8 +13,8 @@ class ST7306:
         # 屏幕参数
         self.LCD_WIDTH = 300
         self.LCD_HEIGHT = 400
-        self.LCD_DATA_WIDTH = 150  # 300/2
-        self.LCD_DATA_HEIGHT = 200  # 400/2
+        self.LCD_DATA_WIDTH = 150  # 300/2 每行150个字节
+        self.LCD_DATA_HEIGHT = 200  # 400/2 共200行
         self.DISPLAY_BUFFER_LENGTH = 30000  # 150 * 200
 
         # 模式标志
@@ -98,30 +98,30 @@ class ST7306:
         self.write_data(0xA6)
         self.write_data(0xE9)
 
-        # Frame Rate Control
+        # Frame Rate Control - 提高刷新率
         self.write_command(0xB2)
-        self.write_data(0x11)  # HPM=32hz
+        self.write_data(0x01)  # 提高刷新率到最大
 
-        # Update Period Gate EQ Control in HPM
+        # Update Period Gate EQ Control in HPM - 优化更新周期
         self.write_command(0xB3)
         for _ in range(10):
-            self.write_data(0x77)
+            self.write_data(0x33)  # 减小更新周期
 
         # Update Period Gate EQ Control in LPM
         self.write_command(0xB4)
-        self.write_data(0x05)
+        self.write_data(0x00)  # 禁用低功耗模式的更新
         for _ in range(7):
-            self.write_data(0x77)
+            self.write_data(0x33)
 
-        # Gate Timing Control
+        # Gate Timing Control - 优化门控时序
         self.write_command(0x62)
         self.write_data(0x32)
-        self.write_data(0x03)
+        self.write_data(0x01)  # 减小门控延迟
         self.write_data(0x1F)
 
         # Source EQ Enable
         self.write_command(0xB7)
-        self.write_data(0x13)
+        self.write_data(0x11)  # 优化源极均衡
 
         # Gate Line Setting
         self.write_command(0xB0)
@@ -147,9 +147,9 @@ class ST7306:
         self.write_command(0xB9)
         self.write_data(0x20)  # Mono mode
 
-        # Panel Setting
+        # Panel Setting - 优化面板设置
         self.write_command(0xB8)
-        self.write_data(0x29)  # 1-Dot inversion, Frame inversion, One Line Interlace
+        self.write_data(0x21)  # 1-Dot inversion, Frame inversion, No Line Interlace
 
         # Column Address Setting
         self.write_command(0x2A)
@@ -167,7 +167,7 @@ class ST7306:
 
         # Auto power down
         self.write_command(0xD0)
-        self.write_data(0xFF)  # Auto power down ON
+        self.write_data(0x00)  # 禁用自动掉电以提高性能
 
         # High Power Mode
         self.write_command(0x38)
@@ -187,16 +187,63 @@ class ST7306:
         # 清屏
         self.clear()
 
-    def clear(self):
-        self.display_buffer = bytearray(self.DISPLAY_BUFFER_LENGTH)
-        self.display()
+    def write_point(self, x, y, data):
+        """写入单个像素点到缓冲区
+        x: 0-299 横坐标
+        y: 0-399 纵坐标
+        data: 像素值 (0-3)
+
+        硬件像素排列（每个字节控制4个像素点）：
+        字节内像素排列：
+        P0(7,6) P1(5,4) P2(3,2) P3(1,0)
+
+        屏幕上的实际排列（2x2矩阵）：
+        P0 P2
+        P1 P3
+        """
+        if x >= self.LCD_WIDTH or y >= self.LCD_HEIGHT or x < 0 or y < 0:
+            return
+
+        # 计算字节位置
+        byte_x = x // 2
+        byte_y = y // 2
+        byte_index = byte_y * self.LCD_DATA_WIDTH + byte_x
+
+        if byte_index >= self.DISPLAY_BUFFER_LENGTH:
+            return
+
+        # 计算像素在字节内的位置
+        pixel_x = x % 2
+        pixel_y = y % 2
+        pixel_pos = pixel_y * 2 + pixel_x  # 0-3
+
+        # 计算位移
+        bit_shift = 6 - (pixel_pos * 2)  # 从高位到低位：6,4,2,0
+
+        # 更新字节
+        mask = ~(0x03 << bit_shift)  # 清除原有位
+        new_value = (data & 0x03) << bit_shift  # 设置新值
+        self.display_buffer[byte_index] = (self.display_buffer[byte_index] & mask) | new_value
 
     def display(self):
+        """显示缓冲区内容"""
         self.address()
-        self.dc(1)
-        self.cs(0)
-        self.spi.write(self.display_buffer)
-        self.cs(1)
+        self.dc(1)  # 数据模式
+        self.cs(0)  # 片选有效
+
+        # 分块发送数据以减少单次传输量
+        chunk_size = 1024  # 每次发送1KB
+        for i in range(0, self.DISPLAY_BUFFER_LENGTH, chunk_size):
+            chunk = self.display_buffer[i:i + chunk_size]
+            self.spi.write(chunk)
+
+        self.cs(1)  # 片选无效
+
+    def clear(self):
+        """清除显示缓冲区"""
+        for i in range(self.DISPLAY_BUFFER_LENGTH):
+            self.display_buffer[i] = 0x00
+        self.display()
 
     def address(self):
         # Column Address Setting
@@ -212,194 +259,227 @@ class ST7306:
         # Write image data
         self.write_command(0x2C)
 
-    def write_point(self, x, y, data):
-        """写入单个像素点
-        x: 0-299 横坐标
-        y: 0-399 纵坐标
-        data: 0=不显示, 非0=显示
-        """
-        if x >= self.LCD_WIDTH or y >= self.LCD_HEIGHT or x < 0 or y < 0:
-            return
-
-        # 反转X轴方向
-        x = self.LCD_WIDTH - 1 - x
-
-        # 计算实际数据位置
-        real_x = x // 2
-        real_y = y // 2
-        write_byte_index = real_y * self.LCD_DATA_WIDTH + real_x
-
-        # 确保不超出缓冲区范围
-        if write_byte_index >= self.DISPLAY_BUFFER_LENGTH:
-            return
-
-        # 计算位位置
-        one_two = 0 if y % 2 == 0 else 1
-        line_bit_1 = (x % 2) * 4
-        line_bit_0 = line_bit_1 + 2
-        write_bit_1 = 7 - (line_bit_1 + one_two)
-        write_bit_0 = 7 - (line_bit_0 + one_two)
-
-        # 对于单色显示，我们将任何非0值都视为显示状态
-        # 并将两个位都设置为1以确保最大对比度
-        if data:
-            # 设置两个位都为1，确保最大显示强度
-            self.display_buffer[write_byte_index] |= (1 << write_bit_1) | (1 << write_bit_0)
-        else:
-            # 清除两个位，确保完全不显示
-            self.display_buffer[write_byte_index] &= ~((1 << write_bit_1) | (1 << write_bit_0))
-
-    def low_power_mode(self):
-        if not self.LPM_MODE:
-            self.HPM_MODE = False
-            self.LPM_MODE = True
-
-            # 设置电压参数
-            self.write_command(0xC1)
-            self.write_data(115)
-            self.write_data(0x3E)
-            self.write_data(0x3C)
-            self.write_data(0x3C)
-
-            self.write_command(0xC2)
-            self.write_data(0x00)
-            self.write_data(0x21)
-            self.write_data(0x23)
-            self.write_data(0x23)
-
-            self.write_command(0xC4)
-            self.write_data(50)
-            self.write_data(0x5C)
-            self.write_data(0x5A)
-            self.write_data(0x5A)
-
-            self.write_command(0xC5)
-            self.write_data(50)
-            self.write_data(0x35)
-            self.write_data(0x37)
-            self.write_data(0x37)
-
-            self.write_command(0xC9)
-            self.write_data(0x00)
-
-            time.sleep_ms(20)
-
-            self.write_command(0x39)  # LPM ON
-            time.sleep_ms(100)
-
-    def high_power_mode(self):
-        if not self.HPM_MODE:
-            self.HPM_MODE = True
-            self.LPM_MODE = False
-
-            self.write_command(0x38)  # HPM ON
-            time.sleep_ms(300)
-
-            # 设置电压参数
-            self.write_command(0xC1)
-            self.write_data(115)
-            self.write_data(0x3E)
-            self.write_data(0x3C)
-            self.write_data(0x3C)
-
-            self.write_command(0xC2)
-            self.write_data(0x00)
-            self.write_data(0x21)
-            self.write_data(0x23)
-            self.write_data(0x23)
-
-            self.write_command(0xC4)
-            self.write_data(50)
-            self.write_data(0x5C)
-            self.write_data(0x5A)
-            self.write_data(0x5A)
-
-            self.write_command(0xC5)
-            self.write_data(50)
-            self.write_data(0x35)
-            self.write_data(0x37)
-            self.write_data(0x37)
-
-            self.write_command(0xC9)
-            self.write_data(0x00)
-
-            time.sleep_ms(20)
-
-    def display_on(self, enabled=True):
-        self.write_command(0x29 if enabled else 0x28)
-
-    def display_sleep(self, enabled=True):
-        if enabled:
-            if self.LPM_MODE:
-                self.write_command(0x38)  # HPM ON
-                time.sleep_ms(300)
-            self.write_command(0x10)  # Sleep ON
-            time.sleep_ms(100)
-        else:
-            self.write_command(0x11)  # Sleep OFF
-            time.sleep_ms(100)
-
-    def display_inversion(self, enabled=True):
-        self.write_command(0x21 if enabled else 0x20)
-
     def draw_char(self, x, y, char, color=1):
-        """在指定位置绘制一个字符
-        color: 0=不显示, 1=显示
+        """绘制单个字符
+        使用增强的像素填充方式提高清晰度
         """
         if char not in FONT_8x8:
             return
 
-        # 确保Y坐标为偶数
-        y = (y // 2) * 2
-
-        # 检查字符是否完全在屏幕范围内
-        if x < 0 or x + 8 > self.LCD_WIDTH or y < 0 or y + 8 > self.LCD_HEIGHT:
-            return
-
         font_data = FONT_8x8[char]
+        value = 0x03 if color else 0x00
+
+        # 清除字符区域
+        for row in range(8):
+            for col in range(8):
+                self.write_point(x + col, y + row, 0)
+
+        # 绘制字符（增强边缘）
         for row in range(8):
             row_data = font_data[row]
             for col in range(8):
                 if row_data & (1 << (7 - col)):
-                    self.write_point(x + col, y + row, color)
+                    # 主像素点
+                    self.write_point(x + col, y + row, value)
 
-    def reverse_text(self, text):
-        """反转字符串的辅助函数"""
-        chars = list(text)
-        length = len(chars)
-        for i in range(length // 2):
-            chars[i], chars[length - 1 - i] = chars[length - 1 - i], chars[i]
-        return ''.join(chars)
+                    # 增强水平连接
+                    if col > 0 and row_data & (1 << (7 - (col - 1))):
+                        self.write_point(x + col - 1, y + row, value)
+                        self.write_point(x + col, y + row, value)
+
+                    # 增强垂直连接
+                    if row > 0 and font_data[row - 1] & (1 << (7 - col)):
+                        self.write_point(x + col, y + row - 1, value)
+                        self.write_point(x + col, y + row, value)
+
+                    # 增强对角连接
+                    if (row > 0 and col > 0 and
+                        font_data[row - 1] & (1 << (7 - (col - 1)))):
+                        self.write_point(x + col - 1, y + row - 1, value)
+                        self.write_point(x + col, y + row - 1, value)
+                        self.write_point(x + col - 1, y + row, value)
 
     def draw_string(self, x, y, text, color=1):
-        """在指定位置绘制字符串
-        color: 0=不显示, 1=显示
+        """绘制字符串
+        确保字符间距合适并保持清晰度
         """
-        # 确保Y坐标为偶数
-        y = (y // 2) * 2
-
-        # 计算整个字符串的宽度
         text_width = len(text) * 8
-
-        # 反转字符串
-        text = self.reverse_text(text)
-
-        # 从左侧开始显示
-        current_x = self.LCD_WIDTH - text_width - x
-        if current_x < 0:
-            current_x = 0
-
+        current_x = x
         current_y = y
-        char_spacing = 8  # 字符间距
 
+        # 如果x是负值，从右边开始计算
+        if x < 0:
+            current_x = max(0, self.LCD_WIDTH + x - text_width)
+
+        # 清除整个文本区域
+        for clear_y in range(y, y + 8):
+            for clear_x in range(current_x, current_x + text_width):
+                self.write_point(clear_x, clear_y, 0)
+
+        # 绘制字符
         for char in text:
             if char == '\n':
-                current_y += 8  # 确保换行后也是偶数
-                current_x = self.LCD_WIDTH - text_width - x
+                current_y += 8
+                current_x = x if x >= 0 else max(0, self.LCD_WIDTH + x - text_width)
                 continue
 
+            if current_x + 8 > self.LCD_WIDTH:
+                current_y += 8
+                current_x = x if x >= 0 else max(0, self.LCD_WIDTH + x - text_width)
+
+            # 绘制当前字符
             self.draw_char(current_x, current_y, char, color)
-            current_x += char_spacing
+
+            # 确保字符间距合适
+            if current_x > x:  # 不是第一个字符
+                # 检查是否需要连接相邻字符
+                prev_char = text[text.index(char) - 1]
+                if prev_char in FONT_8x8:
+                    prev_data = FONT_8x8[prev_char]
+                    curr_data = FONT_8x8[char]
+                    # 检查并连接相邻字符的边缘
+                    for row in range(8):
+                        if (prev_data[row] & 0x01) and (curr_data[row] & 0x80):
+                            self.write_point(current_x - 1, current_y + row, color)
+
+            current_x += 8
+
+    def draw_line(self, x1, y1, x2, y2, color=1):
+        """使用改进的Bresenham算法绘制直线"""
+        value = 0x03 if color else 0x00
+
+        # 确保坐标与2x2像素块对齐
+        x1 = (x1 // 2) * 2
+        y1 = (y1 // 2) * 2
+        x2 = (x2 // 2) * 2
+        y2 = (y2 // 2) * 2
+
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+        steep = dy > dx
+
+        if steep:
+            x1, y1 = y1, x1
+            x2, y2 = y2, x2
+
+        if x1 > x2:
+            x1, x2 = x2, x1
+            y1, y2 = y2, y1
+
+        dx = x2 - x1
+        dy = abs(y2 - y1)
+        error = dx // 2
+        y = y1
+        y_step = 2 if y1 < y2 else -2
+
+        # 按2x2像素块绘制
+        for x in range(x1, x2 + 1, 2):
+            if steep:
+                self.write_point(y, x, value)
+                self.write_point(y + 1, x, value)
+                self.write_point(y, x + 1, value)
+                self.write_point(y + 1, x + 1, value)
+            else:
+                self.write_point(x, y, value)
+                self.write_point(x + 1, y, value)
+                self.write_point(x, y + 1, value)
+                self.write_point(x + 1, y + 1, value)
+
+            error -= dy
+            if error < 0:
+                y += y_step
+                error += dx
+
+    def draw_rect(self, x, y, width, height, color=1, fill=False):
+        """绘制矩形
+        使用连续的像素点绘制，确保边缘完整
+        """
+        if width <= 0 or height <= 0:
+            return
+
+        value = 0x03 if color else 0x00
+
+        # 确保坐标和尺寸与2x2像素块对齐
+        x = (x // 2) * 2
+        y = (y // 2) * 2
+        width = ((width + 1) // 2) * 2
+        height = ((height + 1) // 2) * 2
+
+        if fill:
+            # 填充矩形（按2x2像素块）
+            for cy in range(y, y + height, 2):
+                for cx in range(x, x + width, 2):
+                    self.write_point(cx, cy, value)
+                    self.write_point(cx + 1, cy, value)
+                    self.write_point(cx, cy + 1, value)
+                    self.write_point(cx + 1, cy + 1, value)
+        else:
+            # 绘制水平边
+            for cx in range(x, x + width):
+                # 上边
+                self.write_point(cx, y, value)
+                self.write_point(cx, y + 1, value)
+                # 下边
+                self.write_point(cx, y + height - 2, value)
+                self.write_point(cx, y + height - 1, value)
+
+            # 绘制垂直边
+            for cy in range(y, y + height):
+                # 左边
+                self.write_point(x, cy, value)
+                self.write_point(x + 1, cy, value)
+                # 右边
+                self.write_point(x + width - 2, cy, value)
+                self.write_point(x + width - 1, cy, value)
+
+    def draw_circle(self, x0, y0, radius, color=1, fill=False):
+        """使用改进的Bresenham算法绘制圆"""
+        # 确保坐标与2x2像素块对齐
+        x0 = (x0 // 2) * 2
+        y0 = (y0 // 2) * 2
+        radius = (radius // 2) * 2
+
+        value = 0x03 if color else 0x00
+        x = radius
+        y = 0
+        err = 0
+
+        def draw_circle_points(cx, cy):
+            points = [
+                (x0 + cx, y0 + cy), (x0 - cx, y0 + cy),
+                (x0 + cx, y0 - cy), (x0 - cx, y0 - cy),
+                (x0 + cy, y0 + cx), (x0 - cy, y0 + cx),
+                (x0 + cy, y0 - cx), (x0 - cy, y0 - cx)
+            ]
+            for px, py in points:
+                if 0 <= px < self.LCD_WIDTH and 0 <= py < self.LCD_HEIGHT:
+                    # 绘制2x2像素块
+                    self.write_point(px, py, value)
+                    self.write_point(px + 1, py, value)
+                    self.write_point(px, py + 1, value)
+                    self.write_point(px + 1, py + 1, value)
+
+        while x >= y:
+            if fill:
+                # 填充对应的扇形区域（按2x2像素块）
+                for i in range(-x, x + 1, 2):
+                    for j in range(-1, 2, 2):
+                        py = y0 + y * j
+                        if 0 <= py < self.LCD_HEIGHT:
+                            px = x0 + i
+                            if 0 <= px < self.LCD_WIDTH:
+                                self.write_point(px, py, value)
+                                self.write_point(px + 1, py, value)
+                                self.write_point(px, py + 1, value)
+                                self.write_point(px + 1, py + 1, value)
+            else:
+                draw_circle_points(x, y)
+
+            y += 2
+            err += 1 + 2*y
+            if 2*(err-x) + 1 > 0:
+                x -= 2
+                err += 1 - 2*x
 
     def draw_char_scale(self, x, y, char, scale=1, color=1):
         """绘制放大字符"""
@@ -524,48 +604,6 @@ class ST7306:
             current_x += dx * cos_a
             y += dx * sin_a
 
-    def draw_circle(self, x0, y0, radius, color=1, fill=False):
-        """绘制圆
-        确保起始点y0为偶数以避免锯齿
-        """
-        y0 = (y0 // 2) * 2
-
-        def plot(x, y, c):
-            if 0 <= x < self.LCD_WIDTH and 0 <= y < self.LCD_HEIGHT:
-                self.write_point(x, y, c)
-
-        def draw_circle_points(xc, yc, x, y):
-            plot(xc + x, yc + y, color)
-            plot(xc - x, yc + y, color)
-            plot(xc + x, yc - y, color)
-            plot(xc - x, yc - y, color)
-            plot(xc + y, yc + x, color)
-            plot(xc - y, yc + x, color)
-            plot(xc + y, yc - x, color)
-            plot(xc - y, yc - x, color)
-
-        x = 0
-        y = radius
-        d = 3 - 2 * radius
-
-        while x <= y:
-            if fill:
-                for i in range(-x, x + 1):
-                    plot(x0 + i, y0 + y, color)
-                    plot(x0 + i, y0 - y, color)
-                for i in range(-y, y + 1):
-                    plot(x0 + i, y0 + x, color)
-                    plot(x0 + i, y0 - x, color)
-            else:
-                draw_circle_points(x0, y0, x, y)
-
-            if d < 0:
-                d = d + 4 * x + 6
-            else:
-                d = d + 4 * (x - y) + 10
-                y = y - 1
-            x = x + 1
-
     def draw_filled_circle(self, x0, y0, radius, color=1):
         """使用改进的扫描线算法绘制实心圆"""
         radius_sq = radius * radius
@@ -592,50 +630,106 @@ class ST7306:
                         intensity = min(3, max(0, int(alpha * color)))
                         self.write_point(px, py, intensity)
 
+    def reverse_text(self, text):
+        """反转字符串的辅助函数"""
+        chars = list(text)
+        length = len(chars)
+        for i in range(length // 2):
+            chars[i], chars[length - 1 - i] = chars[length - 1 - i], chars[i]
+        return ''.join(chars)
 
+    def low_power_mode(self):
+        if not self.LPM_MODE:
+            self.HPM_MODE = False
+            self.LPM_MODE = True
 
+            # 设置电压参数
+            self.write_command(0xC1)
+            self.write_data(115)
+            self.write_data(0x3E)
+            self.write_data(0x3C)
+            self.write_data(0x3C)
 
+            self.write_command(0xC2)
+            self.write_data(0x00)
+            self.write_data(0x21)
+            self.write_data(0x23)
+            self.write_data(0x23)
 
-    def draw_rect(self, x, y, width, height, color=1, fill=False):
-        """绘制矩形
-        x, y: 左上角坐标
-        width, height: 宽度和高度
-        color: 颜色值
-        """
-        if fill:
-            for i in range(x, x + width):
-                for j in range(y, y + height):
-                    self.write_point(i, j, color)
+            self.write_command(0xC4)
+            self.write_data(50)
+            self.write_data(0x5C)
+            self.write_data(0x5A)
+            self.write_data(0x5A)
+
+            self.write_command(0xC5)
+            self.write_data(50)
+            self.write_data(0x35)
+            self.write_data(0x37)
+            self.write_data(0x37)
+
+            self.write_command(0xC9)
+            self.write_data(0x00)
+
+            time.sleep_ms(20)
+
+            self.write_command(0x39)  # LPM ON
+            time.sleep_ms(100)
+
+    def high_power_mode(self):
+        if not self.HPM_MODE:
+            self.HPM_MODE = True
+            self.LPM_MODE = False
+
+            self.write_command(0x38)  # HPM ON
+            time.sleep_ms(300)
+
+            # 设置电压参数
+            self.write_command(0xC1)
+            self.write_data(115)
+            self.write_data(0x3E)
+            self.write_data(0x3C)
+            self.write_data(0x3C)
+
+            self.write_command(0xC2)
+            self.write_data(0x00)
+            self.write_data(0x21)
+            self.write_data(0x23)
+            self.write_data(0x23)
+
+            self.write_command(0xC4)
+            self.write_data(50)
+            self.write_data(0x5C)
+            self.write_data(0x5A)
+            self.write_data(0x5A)
+
+            self.write_command(0xC5)
+            self.write_data(50)
+            self.write_data(0x35)
+            self.write_data(0x37)
+            self.write_data(0x37)
+
+            self.write_command(0xC9)
+            self.write_data(0x00)
+
+            time.sleep_ms(20)
+
+    def display_on(self, enabled=True):
+        self.write_command(0x29 if enabled else 0x28)
+
+    def display_sleep(self, enabled=True):
+        if enabled:
+            if self.LPM_MODE:
+                self.write_command(0x38)  # HPM ON
+                time.sleep_ms(300)
+            self.write_command(0x10)  # Sleep ON
+            time.sleep_ms(100)
         else:
-            # 确保Y坐标为偶数
-            y = (y // 2) * 2
-            height = (height // 2) * 2
+            self.write_command(0x11)  # Sleep OFF
+            time.sleep_ms(100)
 
-            # 绘制上边线
-            for i in range(width):
-                self.write_point(x + i, y, color)
-                # 增强显示效果
-                if i > 0 and i < width - 1:
-                    self.write_point(x + i, y + 1, color)
+    def display_inversion(self, enabled=True):
+        self.write_command(0x21 if enabled else 0x20)
 
-            # 绘制下边线
-            for i in range(width):
-                self.write_point(x + i, y + height - 1, color)
-                # 增强显示效果
-                if i > 0 and i < width - 1:
-                    self.write_point(x + i, y + height - 2, color)
 
-            # 绘制左边线
-            for i in range(height):
-                self.write_point(x, y + i, color)
-                # 增强显示效果
-                if i > 0 and i < height - 1:
-                    self.write_point(x + 1, y + i, color)
-
-            # 绘制右边线
-            for i in range(height):
-                self.write_point(x + width - 1, y + i, color)
-                # 增强显示效果
-                if i > 0 and i < height - 1:
-                    self.write_point(x + width - 2, y + i, color)
 
