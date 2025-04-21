@@ -2,7 +2,7 @@
 
 Adapted to MicroPython screen driver through C language driver
 
-The display is not perfect yet and is still being optimized
+At present, the driver has been much better through some adjustments and modifications, and it can achieve 1:1 display
 
 ![Display Effect](img/1.jpg)
 
